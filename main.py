@@ -1,13 +1,11 @@
 import os
 import zipfile
 import shutil
-from tkinter import filedialog, Tk, Listbox, Button, Checkbutton, IntVar, messagebox, Text, Scrollbar, Toplevel, \
-    DoubleVar
-from tkinter.ttk import Progressbar
+from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox, QWidget, QVBoxLayout, QPushButton, QProgressBar, \
+    QListWidget, QCheckBox, QListWidgetItem
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
 import send2trash
-from tkinter import TclError
 from shutil import Error as ShutilError
-import threading
 
 # get the value of the USERPROFILE environment variable
 userprofile = os.environ['USERPROFILE']
@@ -22,14 +20,7 @@ os.makedirs(temp_dir, exist_ok=True)
 
 # function to set the backup directory
 def set_backup_dir():
-    try:
-        root = Tk()
-        root.withdraw()  # Hide the main window
-        messagebox.showinfo('Prompt', 'Select the directory for comparison.')
-        backup_directory = filedialog.askdirectory()  # Show the file dialog and get the selected directory
-    except TclError:
-        # If the environment does not support a GUI, ask the user to input the directory path
-        backup_directory = input('Please enter the path to the backup directory: ')
+    backup_directory = QFileDialog.getExistingDirectory(None, 'Select the directory for comparison.')
     return backup_directory
 
 
@@ -39,171 +30,132 @@ def compare_zip_files(file1, file2):
         return sorted(zip1.namelist()) == sorted(zip2.namelist())
 
 
-# function to check and delete duplicates
-def check_and_delete_duplicates(backup_directory, progress_var, history_text):
-    # get a list of all files in the downloads directory
-    downloads_files = os.listdir(path_to_downloads_dir)
+class Worker(QThread):
+    progress = pyqtSignal(int)
+    info = pyqtSignal(str)
 
-    # get a list of all files in the backup directory
-    backup_files = os.listdir(backup_directory)
+    def __init__(self, backup_directory):
+        super().__init__()
+        self.backup_directory = backup_directory
 
-    # iterate over all files in the downloads directory
-    for i, filename in enumerate(downloads_files):
-        # update the progress bar
-        progress_var.set(i / len(downloads_files) * 100)
+    # function to check and delete duplicates
+    def run(self):
+        # get a list of all files in the downloads directory
+        downloads_files = os.listdir(path_to_downloads_dir)
 
-        # construct the full path to the file
-        file_path = os.path.join(path_to_downloads_dir, filename)
-        backup_file_path = os.path.join(backup_directory, filename)
+        # get a list of all files in the backup directory
+        backup_files = os.listdir(self.backup_directory)
 
-        # if a file in the downloads directory exists in the backup directory
-        if filename in backup_files:
-            # if the file is a zip file, compare the contents
-            if zipfile.is_zipfile(file_path) and zipfile.is_zipfile(backup_file_path):
-                if not compare_zip_files(file_path, backup_file_path):
-                    continue
+        # iterate over all files in the downloads directory
+        for i, filename in enumerate(downloads_files):
+            # update the progress bar
+            self.progress.emit(i / len(downloads_files) * 100)
 
-            # ask for confirmation before moving the file to the temporary directory
-            confirm = messagebox.askyesno('Confirmation',
-                                          f'I found {filename} in {backup_directory}. Do you want to move the original to the temporary folder?')
-            if confirm:
-                try:
-                    # try to move the file to the temporary directory
-                    shutil.move(file_path, os.path.join(temp_dir, filename))
-                    messagebox.showinfo('Moved File', f'Moved {file_path} to the temporary directory')
-                    history_text.insert('end', f'Moved {file_path} to the temporary directory\n')
-                except ShutilError as e:
-                    print(f'Error occurred: {e}')
-        else:
-            # if the file does not exist in the backup directory, ask if the user wants to copy it
-            confirm = messagebox.askyesno('Confirmation',
-                                          f'{filename} does not exist in {backup_directory}. Would you like to copy it?')
-            if confirm:
-                try:
-                    # try to copy the file
-                    shutil.copy(file_path, backup_file_path)
-                    messagebox.showinfo('Copied File', f'Copied {file_path} to {backup_file_path}')
-                    history_text.insert('end', f'Copied {file_path} to {backup_file_path}\n')
-                except ShutilError as e:
-                    print(f'Error occurred: {e}')
+            # construct the full path to the file
+            file_path = os.path.join(path_to_downloads_dir, filename)
+            backup_file_path = os.path.join(self.backup_directory, filename)
 
-    # set the progress bar to 100% when done
-    progress_var.set(100)
+            # if a file in the downloads directory exists in the backup directory
+            if filename in backup_files:
+                # if the file is a zip file, compare the contents
+                if zipfile.is_zipfile(file_path) and zipfile.is_zipfile(backup_file_path):
+                    if not compare_zip_files(file_path, backup_file_path):
+                        continue
+
+                # ask for confirmation before moving the file to the temporary directory
+                confirm = QMessageBox.question(None, 'Confirmation',
+                                               f'I found {filename} in {self.backup_directory}. Do you want to move the original to the temporary folder?',
+                                               QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if confirm == QMessageBox.Yes:
+                    try:
+                        # try to move the file to the temporary directory
+                        shutil.move(file_path, os.path.join(temp_dir, filename))
+                        self.info.emit(f'Moved {file_path} to the temporary directory')
+                    except ShutilError as e:
+                        print(f'Error occurred: {e}')
+            else:
+                # if the file does not exist in the backup directory, ask if the user wants to copy it
+                confirm = QMessageBox.question(None, 'Confirmation',
+                                               f'{filename} does not exist in {self.backup_directory}. Would you like to copy it?',
+                                               QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if confirm == QMessageBox.Yes:
+                    try:
+                        # try to copy the file
+                        shutil.copy(file_path, backup_file_path)
+                        self.info.emit(f'Copied {file_path} to {backup_file_path}')
+                    except ShutilError as e:
+                        print(f'Error occurred: {e}')
+
+        # set the progress bar to 100% when done
+        self.progress.emit(100)
 
 
 # usage
+app = QApplication([])
 backup_dir = set_backup_dir()  # Show the file dialog and get the selected directory
 
-# create a GUI for systems that support it
-try:
-    root = Tk()
-    root.title('Temporary Directory')
+window = QWidget()
+layout = QVBoxLayout()
+window.setLayout(layout)
 
-    # create a listbox to display the files in the temporary directory
-    listbox = Listbox(root)
-    listbox.pack()
+listbox = QListWidget()
+layout.addWidget(listbox)
 
-    # create a list of checkboxes to select the files for the operation
-    checkboxes = []
+progress_bar = QProgressBar()
+layout.addWidget(progress_bar)
+
+worker = Worker(backup_dir)
+worker.progress.connect(progress_bar.setValue)
+worker.info.connect(listbox.addItem)
+worker.start()
+
+delete_button = QPushButton('Delete')
+layout.addWidget(delete_button)
+
+
+def delete_files():
+    for i in range(listbox.count()):
+        item = listbox.item(i)
+        if item.checkState() == Qt.Checked:
+            try:
+                send2trash.send2trash(os.path.join(temp_dir, item.text()))
+                print(f'Moved {item.text()} from the temporary directory to the Recycle Bin')
+            except Exception as e:
+                print(f'Error occurred: {e}')
+    # refresh the listbox
+    refresh()
+
+
+delete_button.clicked.connect(delete_files)
+
+restore_button = QPushButton('Restore')
+layout.addWidget(restore_button)
+
+
+def restore_files():
+    for i in range(listbox.count()):
+        item = listbox.item(i)
+        if item.checkState() == Qt.Checked:
+            try:
+                shutil.move(os.path.join(temp_dir, item.text()), os.path.join(path_to_downloads_dir, item.text()))
+                print(f'Restored {item.text()} to the original location')
+            except Exception as e:
+                print(f'Error occurred: {e}')
+    # refresh the listbox
+    refresh()
+
+
+restore_button.clicked.connect(restore_files)
+
+
+def refresh():
+    listbox.clear()
     for filename in os.listdir(temp_dir):
-        var = IntVar()
-        checkbox_widget = Checkbutton(root, text=filename, variable=var)
-        checkbox_widget.pack()
-        checkboxes.append((checkbox_widget, var))
-
-    # create a button to delete the selected files
-    def delete_files():
-        for checkbox_widget, var in checkboxes:
-            if var.get():
-                try:
-                    send2trash.send2trash(os.path.join(temp_dir, checkbox_widget.cget('text')))
-                    print(f'Moved {checkbox_widget.cget("text")} from the temporary directory to the Recycle Bin')
-                except Exception as e:
-                    print(f'Error occurred: {e}')
-        # refresh the listbox and checkboxes
-        refresh()
+        item = QListWidgetItem(filename)
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Unchecked)
+        listbox.addItem(item)
 
 
-    delete_button = Button(root, text='Delete', command=delete_files)
-    delete_button.pack()
-
-    # create a button to restore the selected files to their original location
-    def restore_files():
-        for checkbox_widget, var in checkboxes:
-            if var.get():
-                try:
-                    shutil.move(os.path.join(temp_dir, checkbox_widget.cget('text')),
-                                os.path.join(path_to_downloads_dir, checkbox_widget.cget('text')))
-                    print(f'Restored {checkbox_widget.cget("text")} to the original location')
-                except Exception as e:
-                    print(f'Error occurred: {e}')
-        # refresh the listbox and checkboxes
-        refresh()
-
-
-    restore_button = Button(root, text='Restore', command=restore_files)
-    restore_button.pack()
-
-    # create a button to cancel the window
-    cancel_button = Button(root, text='Cancel', command=root.destroy)
-    cancel_button.pack()
-
-    # function to refresh the listbox and checkboxes
-    def refresh():
-        # clear the listbox
-        listbox.delete(0, 'end')
-
-        # destroy the checkboxes
-        for checkbox_widget, var in checkboxes:
-            checkbox_widget.destroy()
-
-        # clear the list of checkboxes
-        checkboxes.clear()
-
-        # update the listbox and checkboxes
-        for filename in os.listdir(temp_dir):
-            listbox.insert('end', filename)
-            var = IntVar()
-            checkbox_widget = Checkbutton(root, text=filename, variable=var)
-            checkbox_widget.pack()
-            checkboxes.append((checkbox_widget, var))
-
-
-    # create a history window
-    history_window = Toplevel(root)
-    history_window.title('History')
-
-    # create a Text widget to display the history
-    history_text = Text(history_window)
-    history_text.pack()
-
-    # create a Scrollbar for the Text widget
-    scrollbar = Scrollbar(history_window, command=history_text.yview)
-    scrollbar.pack(side='right', fill='y')
-    history_text['yscrollcommand'] = scrollbar.set
-
-    # create a progress bar
-    progress_var = DoubleVar()
-    progress_bar = Progressbar(root, length=200, mode='determinate', variable=progress_var)
-    progress_bar.pack()
-
-    # start a new thread to check and delete duplicates
-    threading.Thread(target=check_and_delete_duplicates, args=(backup_dir, progress_var, history_text)).start()
-
-    root.mainloop()
-except TclError:
-    # create a text-based interface for terminal users
-    while True:
-        print('Files in the temporary directory:')
-        for i, filename in enumerate(os.listdir(temp_dir), start=1):
-            print(f'{i}. {filename}')
-        print('Enter the number of the file you want to delete, or "q" to quit:')
-        choice = input()
-        if choice.lower() == 'q':
-            break
-        try:
-            filename = os.listdir(temp_dir)[int(choice) - 1]
-            send2trash.send2trash(os.path.join(temp_dir, filename))
-            print(f'Moved {filename} from the temporary directory to the Recycle Bin')
-        except Exception as e:
-            print(f'Error occurred: {e}')
+window.show()
+app.exec_()
