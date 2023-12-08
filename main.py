@@ -135,7 +135,7 @@ layout.addWidget(restore_button)
 def restore_files():
     for i in range(listbox.count()):
         item = listbox.item(i)
-        if item.checkState() == Qt.Checked:
+        if item.checkState() == Qt.Checked:g
             try:
                 shutil.move(os.path.join(temp_dir, item.text()), os.path.join(path_to_downloads_dir, item.text()))
                 print(f'Restored {item.text()} to the original location')
